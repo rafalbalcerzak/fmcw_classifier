@@ -440,19 +440,19 @@ def subtract_background(noise, data):
     avg = np.average(noise, axis=0)
     return data - avg
 
-def gen_n_diff_spect(frames: np.array = None, distances: list=[0, 1, 10], use_db: bool = True) -> (list, np.ndarray):
+def gen_n_diff_spect(frames: np.array = None, distances: list=[0, 1, 10], use_db: bool = True, n: int=512) -> (list, np.ndarray):
     if frames is None:
         raise AttributeError("no frames specified")
 
     to_return = []
     for d in distances:
         if d == 0:
-            spect,y = gen_spectogram(frames)
+            spect,y = gen_spectogram(frames,n=n)
             if use_db:
                 spect = to_dB(spect)
         else:
             spect = diff_frames(frames,  d)
-            spect,y = gen_spectogram(spect)
+            spect,y = gen_spectogram(spect,n=n)
             if use_db:
                 spect  = to_dB(spect)
 
