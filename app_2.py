@@ -1,46 +1,40 @@
 import h5py
 import numpy as  np
-import matplotlib.pyplot as plt
 from source import helper
-plt.rcParams["figure.figsize"] = (20,5)
-plt.rcParams["image.interpolation"] = 'none'
 import tensorflow as tf
 import pygame
 from collections import deque
 import time
 from multiprocessing import Process, Queue
+import pygame.freetype
 
+def send(q,d, file):
+    while True:
+        H5_FILENAME = 'final_dataset'
+        loaded_file = h5py.File('data/' + H5_FILENAME + '.h5', 'r')
+        keys = list(loaded_file.keys())
+        background = loaded_file['background']
+        distances = [1, 2, 5, 10, 20, 50]
+        max_depth = 50
 
-def send(q):
-    H5_FILENAME = 'final_dataset'
-    loaded_file = h5py.File('data/' + H5_FILENAME + '.h5', 'r')
+        frames = loaded_file[keys[file]]
+        frames = helper.subtract_background(background, frames)
+        spects, y = helper.gen_n_diff_spect(frames, distances=distances)
+        spects = np.array(spects)
+        spects = spects[:, :50, :]
 
-    keys = list(loaded_file.keys())
-    file = 13
-    background = loaded_file['background']
-    distances = [1, 2, 5, 10, 20, 50]
-    max_depth = 50
+        spects = [helper.normalize(s) for s in spects]
+        spects = np.array(spects)
 
-    frames = loaded_file[keys[file]]
-    frames = helper.subtract_background(background, frames)
+        frames2 = np.swapaxes(spects, 0, 2)
 
-    frames = loaded_file[keys[file]]
-    frames = helper.subtract_background(background, frames)
-    spects, y = helper.gen_n_diff_spect(frames, distances=distances)
-    spects = np.array(spects)
-    spects = spects[:, :50, :]
+        start = time.perf_counter()
 
-    spects = [helper.normalize(s) for s in spects]
-    spects = np.array(spects)
-
-    frames2 = np.swapaxes(spects, 0, 2)
-
-    start = time.perf_counter()
-
-    for frame in frames2[:1000]:
-        q.put(frame)
-        # print('added frame', flush=True)
-        time.sleep(0.01)
+        for frame in frames2:
+            q.put(frame)
+            d.put(frame)
+            # print('added frame', flush=True)
+            time.sleep(0.01)
 
 def read(q, s):
     path_model = tf.keras.models.load_model('data/models/model_8.h5')
@@ -87,18 +81,28 @@ def read(q, s):
                    3: "Rafal",
                    4: "UMO"}
 
-            print(f'{i}\tpos:{position}\tclass:{cls[pred]}', flush=True)
-            s.put([frames_buffer[0], pred, cls[pred]])
+            # print(f'{i}\tpos:{position}\tclass:{cls[pred]}', flush=True)
+            s.put([position, cls[pred]])
 
 
 if __name__ == '__main__':
     send_queue = Queue()
     display_queue = Queue()
-    send_p = Process(target=send, args=(send_queue,))
+    label_queue = Queue()
+
+    H5_FILENAME = 'final_dataset'
+    loaded_file = h5py.File('data/' + H5_FILENAME + '.h5', 'r')
+
+    keys = list(loaded_file.keys())
+    _ = [print(f'{i}: {k}') for i, k in enumerate(keys)]
+    file = input('Typ file number: ')
+    file = int(file)
+
+    send_p = Process(target=send, args=(send_queue, display_queue, file))
     send_p.daemon = True
     send_p.start()
 
-    read_p = Process(target=read, args=(send_queue, display_queue))
+    read_p = Process(target=read, args=(send_queue, label_queue))
     read_p.daemon = True
     read_p.start()
     # read_p.join()
@@ -109,33 +113,76 @@ if __name__ == '__main__':
     # display_p.join()
 
     pygame.init()
-    window = pygame.display.set_mode((350, 350))
+    window = pygame.display.set_mode((700, 500))
     pygame.display.set_caption("FMCW")
-
+    # GAME_FONT = pygame.freetype.Font("Comic Sans MS", 24)
+    GAME_FONT = pygame.font.SysFont('Jet Brains Mono', 40)
+    GAME_FONT_SMALL = pygame.font.SysFont('Jet Brains Mono', 20)
     run = True
 
+    bar_bg = (255, 255, 255)
+    bar_ind = (255, 100, 100)
+
     arr = np.zeros((15, 50))
-    buffer = None
+    buffer = deque(maxlen=100)
+    pos, cls = 0,None
+    cls_buff = deque(maxlen=5)
+
     while run:
+        if not send_p.is_alive():
+            print('end')
+            run = False
+
         pygame.time.delay(2)
 
         while not display_queue.empty():
-            buffer = display_queue.get()
+            data = display_queue.get()
+            data = np.sum(data, axis=1)/6
+            buffer.append(data)
+            # buffer.append(display_queue.get()[:,0])
 
-        if buffer is None:
-            buffer = [arr, 0, 0]
+        while not label_queue.empty():
+            pos, cls = label_queue.get()
 
-        img = buffer[0].T
+
+        img = np.array(buffer)
         img = img*255
+
+        # img = np.squeeze(img, axis=-1)
 
         img = img.astype('int')
         img = np.expand_dims(img, axis=-1)
-        img = np.kron(img, np.ones((10, 10, 3)))
+        img = np.kron(img, np.ones((3, 10, 3)))
         surf = pygame.surfarray.make_surface(img)
 
         for event in pygame.event.get():
+            if event.type == pygame.K_q:
+                run = False
             if event.type == pygame.QUIT:
-                running = False
-        window.blit(surf, (0, 0))
+                run = False
+
+
+        window.fill((0, 0, 0))
+        window.blit(surf, (300-img.shape[0], 0))
+        cls_buff.append(cls)
+
+        dom_cls = max(set(cls_buff), key=cls_buff.count)
+        if dom_cls != None:
+
+            text_surface = GAME_FONT.render(str(dom_cls), False, (255, 255, 255))
+            # window.blit(text_surface, (320, 250-20))
+            window.blit(text_surface, (320, pos*10-20))
+            pygame.draw.rect(window, bar_bg, pygame.Rect(300,0,10,500))
+
+            pygame.draw.rect(window, bar_ind, pygame.Rect(300, pos*10, 10, 10))
+
+            val = str(round(pos * 0.15, 2)) + 'm'
+            dist = GAME_FONT.render(val, False, (255, 255, 255))
+            window.blit(dist, (520, pos * 10-20))
+
+        else:
+            text_surface = GAME_FONT_SMALL.render('Waiting for radar', False, (255, 255, 255))
+            window.blit(text_surface, (320, window.get_height()//2-10))
+
         pygame.display.update()
 
